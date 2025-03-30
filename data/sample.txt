@@ -1,0 +1,25 @@
+12122
+
+
+切换python3版本
+python3 --version
+如果您的系统同时安装了 Python 2 和 Python 3，可以通过以下方法将 Python 3 设置为默认版本：
+alias python='python3'
+alias pip='pip3'
+
+然后，重新加载配置文件：
+source ~/.bashrc
+在命令行中，你可以通过以下方式查看当前的虚拟环境名称：
+echo $VIRTUAL_ENV
+
+
+删除旧的虚拟环境：
+rm -rf myenv
+
+创建虚拟环境  
+python -m venv myenv
+
+重新激活虚拟环境！！：
+source myenv/bin/activate
+
+然后再安装包 安装成功后 看代码已经没有波浪线了
