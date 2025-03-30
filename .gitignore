@@ -1,0 +1,38 @@
+# 虚拟环境目录
+pyEnv/
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pyc
+__pycache__/
+*.so
+*.egg
+*.egg-info/
+.egg-info/
+dist/
+build/
+*.whl
+*.egg
+*.log
+*.tmp
+*.swp
+*.swo
+*.pyc
+*.pyo
+*.pyd
+*.py~
+*.swp
+*.swo
+*.log
+*.tmp
+*.bak
+*.orig
+*.rej
+*~
+# Jupyter Notebook
+.ipynb_checkpoints/
+# macOS
+.DS_Store
+# Windows
+Thumbs.db
