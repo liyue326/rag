@@ -3,7 +3,8 @@ from langchain_community.document_loaders import TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Chroma
 from langchain_community.embeddings import OllamaEmbeddings
-from langchain_community.llms import Ollama
+# from langchain_community.llms import OllamaLLM
+from langchain_ollama import OllamaLLM
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
@@ -58,11 +59,15 @@ prompt = ChatPromptTemplate.from_template(template)
 
 
 # 配置多模态生成模型
-llm = Ollama(
+llm = OllamaLLM(
     model="llama3.2-vision",  # 支持图文混合输入
     temperature=0.3,
-    request_options={"num_thread": 4}
+    num_thread= 4
 )
+
+# 辅助函数定义（必须在链调用前）
+def _format_docs(docs):
+    return "\n\n".join(doc.page_content for doc in docs)
 
 # 构建多模态 RAG 链
 rag_chain = (

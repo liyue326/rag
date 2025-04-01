@@ -27,3 +27,11 @@ source myenv/bin/activate
 
 
 
+# 检查服务是否运行
+ps aux | grep ollama
+
+# 手动启动服务（确保端口可用）
+ollama serve
+
+# 验证 API 连通性
+curl http://localhost:11434/api/tags
