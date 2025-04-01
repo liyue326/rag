@@ -23,3 +23,7 @@ python -m venv myenv
 source myenv/bin/activate
 
 然后再安装包 安装成功后 看代码已经没有波浪线了
+
+
+
+
