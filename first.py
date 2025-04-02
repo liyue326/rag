@@ -1,5 +1,5 @@
 # 导入所需模块
-from langchain_community.document_loaders import TextLoader
+from langchain_community.document_loaders import DirectoryLoader,TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Chroma
 from langchain_community.embeddings import OllamaEmbeddings
@@ -10,7 +10,14 @@ from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
 
 # 加载本地文本文件（示例路径：data/sample.txt）
-loader = TextLoader("data/sample.txt", encoding="utf-8")
+# loader = DirectoryLoader(
+#     path="doc/",          # 目标目录路径
+#     glob="**/*.{md,txt}",       # 递归匹配所有子目录的.txt文件
+#     loader_cls=TextLoader,  # 指定文本加载器
+#     show_progress=True     # 显示进度条（需安装tqdm库）
+# )
+
+loader = TextLoader("doc/python.md")
 documents = loader.load()
 
 # # 使用递归字符分割器
@@ -30,7 +37,7 @@ embeddings = OllamaEmbeddings(model="llama3.2-vision")  # 支持图像与文本�
 vectorstore = Chroma.from_documents(
     documents=documents,
     embedding=embeddings,
-    persist_directory="./chroma_prod"
+    persist_directory="./chroma_db"
 )
 retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
 
@@ -62,7 +69,7 @@ prompt = ChatPromptTemplate.from_template(template)
 llm = OllamaLLM(
     model="llama3.2-vision",  # 支持图文混合输入
     temperature=0.3,
-    num_thread= 4
+    num_threads= 4
 )
 
 # 辅助函数定义（必须在链调用前）
@@ -78,7 +85,7 @@ rag_chain = (
 )
 
 # 执行问答（纯文本提问示例）
-question = "文档中提到的核心技术有哪些？"
+question = "怎么预览生成的向量bin格式的？"
 response = rag_chain.invoke(question)
 print("\n" + "="*50)
 print(f"问题：{question}")
