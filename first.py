@@ -8,17 +8,56 @@ from langchain_ollama import OllamaLLM
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_community.document_loaders import UnstructuredImageLoader
+import yaml  # 新增此行
+from langchain_core.prompts import load_prompt
+from langchain_core.runnables import RunnableParallel, RunnableLambda
 
+from typing import List
+from langchain_ollama import OllamaEmbeddings, OllamaLLM
+from langchain_core.documents import Document
+from PIL import Image
+import os
+
+# 标准化图像加载器
+class SimpleImageLoader:
+    def __init__(self, path: str):
+        self.image_paths = [os.path.join(path, f) for f in os.listdir(path) 
+                          if f.lower().endswith('.png')]
+
+    def load(self) -> List[Document]:
+        docs = []
+        for img_path in self.image_paths:
+            with Image.open(img_path) as img:
+                docs.append(Document(
+                    page_content=f"PNG图像: {os.path.basename(img_path)}",
+                    metadata={
+                        "source": img_path,
+                        "width": img.width,
+                        "height": img.height,
+                        "content_type": "image"
+                    }
+                ))
+        return docs
+    
 # 加载本地文本文件（示例路径：data/sample.txt）
-# loader = DirectoryLoader(
-#     path="doc/",          # 目标目录路径
-#     glob="**/*.{md,txt}",       # 递归匹配所有子目录的.txt文件
-#     loader_cls=TextLoader,  # 指定文本加载器
-#     show_progress=True     # 显示进度条（需安装tqdm库）
-# )
+text_loader = DirectoryLoader(
+    path="doc/",          # 目标目录路径
+    glob="**/*.{md,txt}",       # 递归匹配所有子目录的.txt文件
+    loader_cls=TextLoader,  # 指定文本加载器
+    loader_kwargs={
+        "autodetect_encoding": True,
+        "metadata_columns": ["source", "content_type"]  # 强制包含content_type
+    },
+    show_progress=True     # 显示进度条（需安装tqdm库）
+)
 
-loader = TextLoader("doc/python.md")
-documents = loader.load()
+image_loader = SimpleImageLoader("doc/img/")
+
+documents = text_loader.load() + image_loader.load()
+print(documents)
+# loader = TextLoader("doc/python.md")
+# documents = loader.load()
 
 # # 使用递归字符分割器
 # text_splitter = RecursiveCharacterTextSplitter(
@@ -53,16 +92,6 @@ docs = vector_store.get(include=["documents", "metadatas"])
 print("文档内容:", docs["documents"])
 print("元数据:", docs["metadatas"])
 
-template = """
-基于以下多模态上下文回答问题：
-{context}
-
-用户输入：{question}
-请结合图文信息生成答案，若包含图表请用Markdown格式描述。
-"""
-prompt = ChatPromptTemplate.from_template(template)
-
-
 
 
 # 配置多模态生成模型
@@ -74,24 +103,45 @@ llm = OllamaLLM(
 
 # 辅助函数定义（必须在链调用前）
 def _format_docs(docs):
-    return "\n\n".join(doc.page_content for doc in docs)
+    formatted = []
+    for doc in docs:
+          # 添加默认值处理
+        content_type = doc.metadata.get("content_type", "text")
+        source = doc.metadata.get("source", "unknown")
+        print('doc.page_content',doc)
+        if content_type == "image":
+            # 生成Markdown图像引用
+            formatted.append(f"![相关图片]({source})")
+        else:
+            formatted.append(doc.page_content)
+    return "\n\n".join(formatted)
+
+
+
+# 运行时动态加载
+with open("prompts/tech_qa.yaml") as f:
+    prompt_template = yaml.safe_load(f)["system_prompt"]
+prompt = ChatPromptTemplate.from_template(prompt_template)
 
 # 构建多模态 RAG 链
 rag_chain = (
-    {"context": retriever | _format_docs, "question": RunnablePassthrough()}
+    RunnableParallel({
+        "context": retriever | _format_docs,
+        "question": RunnablePassthrough()
+    })
     | prompt
     | llm
     | StrOutputParser()
 )
-
 # 执行问答（纯文本提问示例）
-question = "怎么预览生成的向量bin格式的？"
+question = "怎么查看文件格式，知道格式后用什么工具处理"
 response = rag_chain.invoke(question)
+
+# # 带图像的提问示例（需将图片路径加入文档库）
+# image_question = "分析这张图片中的技术原理"
+# response = rag_chain.invoke({"question": image_question, "image": "doc/img/image.png"})
 print("\n" + "="*50)
 print(f"问题：{question}")
 print("="*50 + "\n")
 print(response)
 
-# 带图像的提问示例（需将图片路径加入文档库）
-# image_question = "分析这张图片中的技术原理"
-# response = rag_chain.invoke({"question": image_question, "image": "data/tech_diagram.png"})
