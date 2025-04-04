@@ -55,19 +55,19 @@ text_loader = DirectoryLoader(
 image_loader = SimpleImageLoader("doc/img/")
 
 documents = text_loader.load() + image_loader.load()
-print(documents)
+print('documents',documents)
 # loader = TextLoader("doc/python.md")
 # documents = loader.load()
 
-# # 使用递归字符分割器
-# text_splitter = RecursiveCharacterTextSplitter(
-#     chunk_size=500,
-#     chunk_overlap=50,
-#     separators=["\n\n", "\n", "。", "！", "？", "；",":"]
-# )
-# splits = text_splitter.split_documents(documents)
-# print(f"原始文档数: {len(documents)}")
-# print(f"分割后文档数: {len(splits)}")  # 正确分割后数量应 >1
+# 使用递归字符分割器
+text_splitter = RecursiveCharacterTextSplitter(
+    chunk_size=500,
+    chunk_overlap=50,
+    separators=["\n\n", "\n", "。", "！", "？", "；",":"]
+)
+splits = text_splitter.split_documents(documents)
+print(f"原始文档数: {len(documents)}")
+print(f"分割后文档数: {len(splits)}")  # 正确分割后数量应 >1
 
 
 # 使用多模态嵌入模型（如 Llama 3.2 或 Bakllava）
@@ -78,7 +78,12 @@ vectorstore = Chroma.from_documents(
     embedding=embeddings,
     persist_directory="./chroma_db"
 )
-retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
+
+# 动态计算k值（至少1，不超过文档总数的1/3）
+valid_doc_count = len(documents)
+retriever = vectorstore.as_retriever(    search_kwargs={
+        "k": max(5, max(1, valid_doc_count // 3))
+    })
 
 print('retriever',retriever)
 
@@ -133,13 +138,25 @@ rag_chain = (
     | llm
     | StrOutputParser()
 )
+
+
+
 # 执行问答（纯文本提问示例）
-question = "怎么查看文件格式，知道格式后用什么工具处理"
-response = rag_chain.invoke(question)
+# question = "怎么查看文件格式，知道格式后用什么工具处理"
 
 # # 带图像的提问示例（需将图片路径加入文档库）
-# image_question = "分析这张图片中的技术原理"
-# response = rag_chain.invoke({"question": image_question, "image": "doc/img/image.png"})
+question = "python3环境相关的知识点"
+
+
+
+# 检索与问题相关的文档
+docs = retriever.get_relevant_documents(question)
+for doc in docs:
+    if doc.metadata.get("content_type") == "image":
+        print(f"关联图片: {doc.metadata['source']}")
+
+
+response = rag_chain.invoke(question)
 print("\n" + "="*50)
 print(f"问题：{question}")
 print("="*50 + "\n")
