@@ -14,7 +14,7 @@ from langchain_core.runnables import RunnableParallel, RunnableLambda
 from langchain_core.embeddings import Embeddings  # 导入基类
 from langchain_community.vectorstores.utils import filter_complex_metadata
 from transformers import AutoTokenizer
-
+import torch
 from typing import List
 from langchain_ollama import OllamaEmbeddings, OllamaLLM
 from langchain_core.documents import Document
@@ -22,31 +22,9 @@ from PIL import Image
 import os
 from accelerate import init_empty_weights
 from transformers import CLIPProcessor, CLIPModel
+from sentence_transformers import CrossEncoder
+reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
 
-# 标准化图像加载器
-# class SimpleImageLoader:
-#     def __init__(self, path: str):
-#         self.image_paths = [os.path.join(path, f) for f in os.listdir(path) 
-#                           if f.lower().endswith('.png')]
-
-#     def load(self) -> List[Document]:
-#         docs = []
-#         for img_path in self.image_paths:
-#             with Image.open(img_path) as img:
-#                 docs.append(Document(
-#                     page_content=f"PNG图像: {os.path.basename(img_path)}",
-#                     metadata={
-#                         "source": img_path,
-#                         "width": img.width,
-#                         "height": img.height,
-#                         "content_type": "image"
-#                     }
-#                 ))
-#         return docs
-
-import torch
-print(torch.backends.mps.is_available())  # 输出应为True
-import torch
 print(f"PyTorch版本: {torch.__version__}")
 print(f"CUDA可用: {torch.cuda.is_available()}")
 print(f"MPS可用: {torch.backends.mps.is_available()}")
@@ -95,8 +73,8 @@ for doc in text_docs:
 
 # 2. 修正文本分割逻辑
 text_splitter = RecursiveCharacterTextSplitter(
-    chunk_size=200,
-    chunk_overlap=10,
+    chunk_size=300,
+    chunk_overlap=30,
     separators=["\n\n", "\n", "。", "！", "？", "；", "——", "…"]  # 添加中文分隔符
 )
 splits = text_splitter.split_documents(text_docs)
@@ -191,12 +169,31 @@ def _format_docs(docs):
         print('doc.page_content',doc)
         if content_type == "image":
             # 生成Markdown图像引用
-            formatted.append(f"![相关图片]({source})")
+            img_desc = f"图像特征向量维度: {len(doc.metadata.get('vector', []))}，路径: {source}"
+            formatted.append(f"![相关图片]({source})\n{img_desc}")
         else:
             formatted.append(doc.page_content)
     return "\n\n".join(formatted)
 
-
+def rerank_documents(query: str, docs: list[Document], top_k: int = 5) -> list[Document]:
+    """多模态文档重排序函数"""
+    # 生成查询-文档对（处理文本和图像元数据）
+    pairs = []
+    for doc in docs:
+        if doc.metadata.get("content_type") == "image":
+            # 使用图像路径或预存向量作为描述
+            content = doc.metadata.get("source", "") + " " + str(doc.metadata.get("vector", []))
+        else:
+            content = doc.page_content
+        pairs.append((query, content))
+    
+    # 计算相关性分数 
+    scores = reranker.predict(pairs)
+    
+    # 按分数排序并过滤
+    ranked_docs = sorted(zip(docs, scores), key=lambda x: x[1], reverse=True)
+    print('ranked_docs',scores)
+    return [doc for doc, _ in ranked_docs[:top_k]]
 
 # 运行时动态加载
 with open("prompts/tech_qa.yaml") as f:
@@ -206,8 +203,12 @@ prompt = ChatPromptTemplate.from_template(prompt_template)
 # 构建多模态 RAG 链
 rag_chain = (
     RunnableParallel({
-        "context": retriever | _format_docs,
+        "raw_context": retriever,  # 原始检索结果
         "question": RunnablePassthrough()
+    })
+    | RunnableLambda(lambda x: {
+        "context": _format_docs(rerank_documents(x["question"], x["raw_context"])),
+        "question": x["question"]
     })
     | prompt
     | llm
@@ -220,7 +221,7 @@ rag_chain = (
 # question = "怎么查看文件格式，知道格式后用什么工具处理"
 
 # # 带图像的提问示例（需将图片路径加入文档库）
-question = "milvus适用场景"
+question = "Python 3 默认版本与虚拟环境配置"
 
 tokenizer = AutoTokenizer.from_pretrained("openai/clip-vit-base-patch32")
 inputs = tokenizer(question, return_tensors="pt")
