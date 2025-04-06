@@ -13,6 +13,7 @@ from langchain_core.prompts import load_prompt
 from langchain_core.runnables import RunnableParallel, RunnableLambda
 from langchain_core.embeddings import Embeddings  # 导入基类
 from langchain_community.vectorstores.utils import filter_complex_metadata
+from transformers import AutoTokenizer
 
 from typing import List
 from langchain_ollama import OllamaEmbeddings, OllamaLLM
@@ -94,8 +95,8 @@ for doc in text_docs:
 
 # 2. 修正文本分割逻辑
 text_splitter = RecursiveCharacterTextSplitter(
-    chunk_size=300,
-    chunk_overlap=50,
+    chunk_size=200,
+    chunk_overlap=10,
     separators=["\n\n", "\n", "。", "！", "？", "；", "——", "…"]  # 添加中文分隔符
 )
 splits = text_splitter.split_documents(text_docs)
@@ -122,13 +123,19 @@ class CLIPEmbeddings(Embeddings):
     
     def embed_documents(self, texts: List[str]) -> List[List[float]]:
         # 处理文本嵌入
-        inputs = self.processor(text=texts, return_tensors="pt", padding=True)
+        inputs = self.processor(text=texts,
+                                 return_tensors="pt", 
+                                 padding=True,
+                                 max_length=77,
+                                 truncation=True,  # 添加截断
+)
         with torch.no_grad():
             return self.model.get_text_features(**inputs).tolist()
     
     def embed_query(self, query: str) -> List[float]:
         # 处理查询嵌入
-        inputs = self.processor(text=query, return_tensors="pt")
+        inputs = self.processor(text=query, return_tensors="pt",max_length=77, truncation=True,  # 添加截断
+)
         with torch.no_grad():
             return self.model.get_text_features(**inputs).tolist()[0]
         
@@ -215,7 +222,9 @@ rag_chain = (
 # # 带图像的提问示例（需将图片路径加入文档库）
 question = "milvus适用场景"
 
-
+tokenizer = AutoTokenizer.from_pretrained("openai/clip-vit-base-patch32")
+inputs = tokenizer(question, return_tensors="pt")
+print("Token数量:", inputs.input_ids.shape[1])  
 
 # 检索与问题相关的文档
 docs = retriever.get_relevant_documents(question)
