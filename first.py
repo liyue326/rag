@@ -1,60 +1,154 @@
 # 导入所需模块
-from langchain_community.document_loaders import TextLoader
+from langchain_community.document_loaders import DirectoryLoader,TextLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.vectorstores import Chroma
 from langchain_community.embeddings import OllamaEmbeddings
-# from langchain_community.llms import OllamaLLM
 from langchain_ollama import OllamaLLM
 from langchain_core.runnables import RunnablePassthrough
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.prompts import ChatPromptTemplate
+from langchain_community.document_loaders import UnstructuredImageLoader
+import yaml  # 新增此行
+from langchain_core.prompts import load_prompt
+from langchain_core.runnables import RunnableParallel, RunnableLambda
+from langchain_core.embeddings import Embeddings  # 导入基类
+from langchain_community.vectorstores.utils import filter_complex_metadata
+from transformers import AutoTokenizer
+import torch
+from typing import List
+from langchain_ollama import OllamaEmbeddings, OllamaLLM
+from langchain_core.documents import Document
+from PIL import Image
+import os
+from accelerate import init_empty_weights
+from transformers import CLIPProcessor, CLIPModel
+from sentence_transformers import CrossEncoder
+reranker = CrossEncoder("cross-encoder/ms-marco-MiniLM-L-6-v2")
 
+print(f"PyTorch版本: {torch.__version__}")
+print(f"CUDA可用: {torch.cuda.is_available()}")
+print(f"MPS可用: {torch.backends.mps.is_available()}")
+from pathlib import Path
+
+class CLIPImageLoader:
+    def __init__(self, path: str):
+        self.image_paths = [os.path.join(path, f) for f in os.listdir(path) 
+                          if f.lower().endswith(('.png', '.jpg', '.jpeg'))]
+        self.processor = CLIPProcessor.from_pretrained("openai/clip-vit-base-patch32")
+        self.model = CLIPModel.from_pretrained("openai/clip-vit-base-patch32")
+
+    def load(self) -> List[Document]:
+        docs = []
+        for img_path in self.image_paths:
+            image = Image.open(img_path)
+            inputs = self.processor(images=image, return_tensors="pt")
+            with torch.no_grad():
+                features = self.model.get_image_features(**inputs).numpy().tolist()[0]
+            docs.append(Document(
+                page_content="",  # 可保留空或添加描述
+                metadata={
+                    "source": img_path,
+                    "vector": features,  # 存储CLIP特征向量
+                    "content_type": "image"
+                }
+            ))
+        return docs
+    
 # 加载本地文本文件（示例路径：data/sample.txt）
-loader = TextLoader("doc/sample.txt", encoding="utf-8")
-documents = loader.load()
+text_loader = DirectoryLoader(
+    path="doc/",
+    glob="**/*.md",
+    loader_cls=TextLoader,
+    loader_kwargs={"autodetect_encoding": True},  # 移除metadata_columns
+    show_progress=True
+)
+text_docs = text_loader.load()
+text_files = list(Path("doc/").glob("**/*.md")) + list(Path("doc/").glob("**/*.txt"))
+print(f"匹配的文本文件: {[str(f) for f in text_files]}")
 
-# # 使用递归字符分割器
-# text_splitter = RecursiveCharacterTextSplitter(
-#     chunk_size=500,
-#     chunk_overlap=50,
-#     separators=["\n\n", "\n", "。", "！", "？", "；",":"]
-# )
-# splits = text_splitter.split_documents(documents)
-# print(f"原始文档数: {len(documents)}")
-# print(f"分割后文档数: {len(splits)}")  # 正确分割后数量应 >1
+
+# 手动添加元数据类型标记
+for doc in text_docs:
+    doc.metadata["content_type"] = "text"
+
+# 2. 修正文本分割逻辑
+text_splitter = RecursiveCharacterTextSplitter(
+    chunk_size=300,
+    chunk_overlap=30,
+    separators=["\n\n", "\n", "。", "！", "？", "；", "——", "…"]  # 添加中文分隔符
+)
+splits = text_splitter.split_documents(text_docs)
+
+# 3. 验证分割结果
+print(f"原始文档数: {len(text_docs)}")
+print(f"分割后文档数: {len(splits)}")
+
+
+image_loader = CLIPImageLoader("doc/img/")
+# 过滤元数据（保留默认支持的str/int/float/bool）
+
+
+documents = splits + image_loader.load()
+documents = filter_complex_metadata(documents)
+
+print('documents',documents)
+
+
+class CLIPEmbeddings(Embeddings):
+    def __init__(self, model_path: str):
+        self.processor = CLIPProcessor.from_pretrained(model_path)
+        self.model = CLIPModel.from_pretrained(model_path)
+    
+    def embed_documents(self, texts: List[str]) -> List[List[float]]:
+        # 处理文本嵌入
+        inputs = self.processor(text=texts,
+                                 return_tensors="pt", 
+                                 padding=True,
+                                 max_length=77,
+                                 truncation=True,  # 添加截断
+)
+        with torch.no_grad():
+            return self.model.get_text_features(**inputs).tolist()
+    
+    def embed_query(self, query: str) -> List[float]:
+        # 处理查询嵌入
+        inputs = self.processor(text=query, return_tensors="pt",max_length=77, truncation=True,  # 添加截断
+)
+        with torch.no_grad():
+            return self.model.get_text_features(**inputs).tolist()[0]
+        
+clip_embeddings = CLIPEmbeddings("openai/clip-vit-base-patch32")
+
+
+
 
 
 # 使用多模态嵌入模型（如 Llama 3.2 或 Bakllava）
-embeddings = OllamaEmbeddings(model="llama3.2-vision")  # 支持图像与文本联合编码
+# embeddings = OllamaEmbeddings(model="llama3.2-vision")  # 支持图像与文本联合编码
 # 生成跨模态向量
 vectorstore = Chroma.from_documents(
     documents=documents,
-    embedding=embeddings,
-    persist_directory="./chroma_prod"
+    embedding=clip_embeddings,  # 使用自定义嵌入类
+    persist_directory="./chroma_db"
 )
-retriever = vectorstore.as_retriever(search_kwargs={"k": 5})
+
+# 动态计算k值（至少1，不超过文档总数的1/3）
+valid_doc_count = len(documents)
+retriever = vectorstore.as_retriever(    search_kwargs={
+        "k": max(5, max(1, valid_doc_count // 3)),
+        # "boost": [
+        #     {"content_type": "text", "factor": 2.0},  # 文本权重加倍
+        #     {"content_type": "image", "factor": 1.0}
+        # ]
+    })
 
 print('retriever',retriever)
 
-vector_store = Chroma(
-    persist_directory="./chroma_db",
-    embedding_function=embeddings
-)
 
 # 查询所有文档（示例）
-docs = vector_store.get(include=["documents", "metadatas"])
+docs = vectorstore.get(include=["documents", "metadatas"])
 print("文档内容:", docs["documents"])
 print("元数据:", docs["metadatas"])
-
-template = """
-基于以下多模态上下文回答问题：
-{context}
-
-用户输入：{question}
-请结合图文信息生成答案，若包含图表请用Markdown格式描述。
-"""
-prompt = ChatPromptTemplate.from_template(template)
-
 
 
 
@@ -62,29 +156,87 @@ prompt = ChatPromptTemplate.from_template(template)
 llm = OllamaLLM(
     model="llama3.2-vision",  # 支持图文混合输入
     temperature=0.3,
-    num_thread= 4
+    num_threads= 4
 )
 
 # 辅助函数定义（必须在链调用前）
 def _format_docs(docs):
-    return "\n\n".join(doc.page_content for doc in docs)
+    formatted = []
+    for doc in docs:
+          # 添加默认值处理
+        content_type = doc.metadata.get("content_type", "text")
+        source = doc.metadata.get("source", "unknown")
+        print('doc.page_content',doc)
+        if content_type == "image":
+            # 生成Markdown图像引用
+            img_desc = f"图像特征向量维度: {len(doc.metadata.get('vector', []))}，路径: {source}"
+            formatted.append(f"![相关图片]({source})\n{img_desc}")
+        else:
+            formatted.append(doc.page_content)
+    return "\n\n".join(formatted)
+
+def rerank_documents(query: str, docs: list[Document], top_k: int = 5) -> list[Document]:
+    """多模态文档重排序函数"""
+    # 生成查询-文档对（处理文本和图像元数据）
+    pairs = []
+    for doc in docs:
+        if doc.metadata.get("content_type") == "image":
+            # 使用图像路径或预存向量作为描述
+            content = doc.metadata.get("source", "") + " " + str(doc.metadata.get("vector", []))
+        else:
+            content = doc.page_content
+        pairs.append((query, content))
+    
+    # 计算相关性分数 
+    scores = reranker.predict(pairs)
+    
+    # 按分数排序并过滤
+    ranked_docs = sorted(zip(docs, scores), key=lambda x: x[1], reverse=True)
+    print('ranked_docs',scores)
+    return [doc for doc, _ in ranked_docs[:top_k]]
+
+# 运行时动态加载
+with open("prompts/tech_qa.yaml") as f:
+    prompt_template = yaml.safe_load(f)["system_prompt"]
+prompt = ChatPromptTemplate.from_template(prompt_template)
 
 # 构建多模态 RAG 链
 rag_chain = (
-    {"context": retriever | _format_docs, "question": RunnablePassthrough()}
+    RunnableParallel({
+        "raw_context": retriever,  # 原始检索结果
+        "question": RunnablePassthrough()
+    })
+    | RunnableLambda(lambda x: {
+        "context": _format_docs(rerank_documents(x["question"], x["raw_context"])),
+        "question": x["question"]
+    })
     | prompt
     | llm
     | StrOutputParser()
 )
 
+
+
 # 执行问答（纯文本提问示例）
-question = "文档中提到的核心技术有哪些？"
+# question = "怎么查看文件格式，知道格式后用什么工具处理"
+
+# # 带图像的提问示例（需将图片路径加入文档库）
+question = "Python 3 默认版本与虚拟环境配置"
+
+tokenizer = AutoTokenizer.from_pretrained("openai/clip-vit-base-patch32")
+inputs = tokenizer(question, return_tensors="pt")
+print("Token数量:", inputs.input_ids.shape[1])  
+
+# 检索与问题相关的文档
+docs = retriever.get_relevant_documents(question)
+for doc in docs:
+    if doc.metadata.get("content_type") == "image":
+        print(f"关联图片: {doc.metadata['source']}")
+
+
 response = rag_chain.invoke(question)
 print("\n" + "="*50)
 print(f"问题：{question}")
 print("="*50 + "\n")
 print(response)
 
-# 带图像的提问示例（需将图片路径加入文档库）
-# image_question = "分析这张图片中的技术原理"
-# response = rag_chain.invoke({"question": image_question, "image": "data/tech_diagram.png"})
